@@ -11,6 +11,7 @@ The release workflow expects a versioned section named `## [X.Y.Z]` for tag `vX.
 - Raised headless desktop mirroring's capture ceiling from Chromium's 800x450 default to 1920x1080 and isolated controller launches from standard per-user browser flag files and environment variables.
 - Recognize Chromium's flattened Linux process command line using its private launch identity so discovery and stop operations reliably terminate their isolated controller instead of leaking browser process trees.
 - Version the Chromium launch policy separately from the profile schema so new casts do not reuse obsolete controller settings while status and stop remain safe during upgrades.
+- Reflect successful start and stop actions immediately in the Quickshell panel so the stop control remains available while status polling catches up.
 
 ## [0.1.3] - 2026-08-23
 
