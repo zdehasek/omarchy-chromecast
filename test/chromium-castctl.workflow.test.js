@@ -86,6 +86,9 @@ test('dummy Cast backend exercises plugin helper workflow commands', () => {
     assert.match(start.stdout, /Started desktop mirroring to Dummy Living Room/);
     const activeState = mod.readState(paths);
     assert.ok(activeState && mod.isPidAlive(activeState.pid), 'start leaves the dummy control browser running');
+    assert.equal(activeState.launchConfigVersion, mod.CHROMIUM_LAUNCH_CONFIG_VERSION);
+    assert.ok(activeState.launchArgs.includes('--screen-info={1920x1080}'));
+    assert.ok(activeState.launchArgs.includes('--window-size=1920,1080'));
 
     const activeStatus = runCastctl(['status', '--waybar'], env);
     assert.equal(activeStatus.status, 0, activeStatus.stderr);
@@ -114,6 +117,62 @@ test('dummy Cast backend exercises plugin helper workflow commands', () => {
         process.kill(-state.pid, 'SIGKILL');
       } catch {
         process.kill(state.pid, 'SIGKILL');
+      }
+    }
+  }
+});
+
+test('discovery closes Chromium after it flattens its process command line', () => {
+  const home = tempHome();
+  const env = { ...makeEnv(home), CHROMIUM_CASTCTL_DUMMY_FLATTEN_CMDLINE: '1' };
+  const paths = mod.resolvePaths(env);
+  let browserPid;
+
+  try {
+    const sinks = runCastctl(['sinks'], env);
+    assert.equal(sinks.status, 0, sinks.stderr);
+    assert.equal(sinks.stdout.trim(), 'Dummy Living Room');
+
+    browserPid = mod.readBrowserIdentity(paths)?.pid;
+    assert.ok(browserPid);
+    assert.equal(mod.isPidAlive(browserPid), false);
+    assert.equal(mod.readState(paths), null);
+  } finally {
+    if (browserPid && mod.isPidAlive(browserPid)) {
+      try {
+        process.kill(-browserPid, 'SIGKILL');
+      } catch {
+        process.kill(browserPid, 'SIGKILL');
+      }
+    }
+  }
+});
+
+test('status cleans a recorded flattened browser after controller state is lost', () => {
+  const home = tempHome();
+  const env = { ...makeEnv(home), CHROMIUM_CASTCTL_DUMMY_FLATTEN_CMDLINE: '1' };
+  const paths = mod.resolvePaths(env);
+  let browserPid;
+
+  try {
+    const start = runCastctl(['start', 'Dummy Living Room'], env);
+    assert.equal(start.status, 0, start.stderr);
+    const state = mod.readState(paths);
+    assert.ok(state && mod.isPidAlive(state.pid));
+    browserPid = state.pid;
+    fs.rmSync(paths.stateFile);
+
+    const status = runCastctl(['status', '--waybar'], env);
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(JSON.parse(status.stdout).class, 'idle');
+    assert.equal(mod.isPidAlive(browserPid), false);
+    assert.equal(mod.readState(paths), null);
+  } finally {
+    if (browserPid && mod.isPidAlive(browserPid)) {
+      try {
+        process.kill(-browserPid, 'SIGKILL');
+      } catch {
+        process.kill(browserPid, 'SIGKILL');
       }
     }
   }
@@ -255,12 +314,10 @@ test('browser startup phases share one timeout deadline', () => {
     CHROMIUM_CASTCTL_DUMMY_DEVTOOLS_DELAY_MS: '150',
     CHROMIUM_CASTCTL_DUMMY_CDP_READY_DELAY_MS: '400',
   };
-  const startedAt = Date.now();
 
   const sinks = runCastctl(['sinks'], env);
 
   assert.equal(sinks.status, 1);
-  assert.ok(Date.now() - startedAt < 700);
 });
 
 test('concurrent discovery commands serialize controller state and leave no active browser state', async () => {

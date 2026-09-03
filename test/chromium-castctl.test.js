@@ -373,6 +373,7 @@ test('XDG paths use isolated chromium-castctl locations and ignore relative XDG 
   const home = tempHome();
   const paths = mod.resolvePaths({ HOME: home, XDG_DATA_HOME: 'relative-data', XDG_STATE_HOME: 'relative-state', XDG_CACHE_HOME: 'relative-cache' });
   assert.equal(paths.profileDir, path.join(home, '.local', 'share', 'chromium-castctl', 'chromium-profile'));
+  assert.equal(paths.launcherConfigDir, path.join(home, '.local', 'share', 'chromium-castctl', 'chromium-config'));
   assert.equal(paths.stateFile, path.join(home, '.local', 'state', 'chromium-castctl', 'state.json'));
   assert.equal(paths.logFile, path.join(home, '.cache', 'chromium-castctl', 'chromium.log'));
 });
@@ -395,6 +396,23 @@ test('executable lookup falls back to the process PATH when PATH is absent', () 
   assert.ok(mod.findExecutable('node', {}));
 });
 
+test('process argument matching supports Chromium flattened command lines', () => {
+  const paths = { profileDir: '/tmp/cast profile' };
+  const identity = {
+    cmdline: `/usr/lib/chromium/chromium --headless=new --user-data-dir=${paths.profileDir} --type=renderer\0`,
+  };
+
+  assert.equal(mod.processUsesProfile(identity, paths), true);
+  assert.equal(mod.cmdlineHasArgument(identity, '--headless=new'), true);
+  assert.equal(mod.cmdlineHasArgumentPrefix(identity, '--type='), true);
+  assert.equal(mod.processUsesProfile(identity, { profileDir: '/tmp/cast' }), false);
+  assert.equal(mod.processUsesProfile(identity, { profileDir: '/tmp/cast-profile' }), false);
+  assert.equal(mod.cmdlineHasLaunchToken({
+    cmdline: '/usr/lib/chromium/chromium --chromium-castctl-launch-token=token-123 about:blank\0',
+  }, 'token-123'), true);
+  assert.equal(mod.cmdlineHasLaunchToken(identity, 'token with spaces'), false);
+});
+
 test('chromium launch args use an isolated headless profile and localhost-only DevTools', () => {
   const paths = mod.resolvePaths({ HOME: tempHome() });
   const args = mod.chromiumLaunchArgs(paths, 9333, {});
@@ -402,9 +420,66 @@ test('chromium launch args use an isolated headless profile and localhost-only D
   assert.ok(args.includes('--remote-debugging-address=127.0.0.1'));
   assert.ok(args.includes('--remote-debugging-port=9333'));
   assert.ok(args.includes('--headless=new'));
+  assert.ok(args.includes('--screen-info={1920x1080}'));
+  assert.ok(args.includes('--window-size=1920,1080'));
   assert.ok(args.includes('--enable-features=MediaRouter'));
   assert.ok(!args.some((arg) => arg.includes('PulseaudioLoopbackForCast')));
   assert.ok(!args.some((arg) => arg.includes('.config/chromium')));
+});
+
+test('chromium launch isolates distribution launcher flags from the normal browser', () => {
+  const paths = mod.resolvePaths({ HOME: tempHome() });
+  const env = mod.chromiumLaunchEnv(paths, {
+    HOME: paths.home,
+    XDG_CONFIG_HOME: '/normal/config',
+    CHROME_EXTRA_FLAGS: '--load-extension=/tmp/user-extension',
+    CHROME_EXTRA_FLAGS_BETA: '--window-size=800,600',
+    'CHROME_EXTRA_FLAGS_ARCH LINUX': '--remote-debugging-address=0.0.0.0',
+    CHROME_USER_FLAGS: '--disable-features=MediaRouter',
+    CHROMIUM_USER_FLAGS: '--user-data-dir=/tmp/user-profile',
+    CHROMIUM_FLAGS: '--disable-gpu',
+    CHROME_VERSION_EXTRA: 'Arch Linux',
+    KEEP_ME: 'yes',
+  });
+
+  assert.equal(env.XDG_CONFIG_HOME, paths.launcherConfigDir);
+  assert.equal(env.CHROME_EXTRA_FLAGS, undefined);
+  assert.equal(env.CHROME_EXTRA_FLAGS_BETA, undefined);
+  assert.equal(env['CHROME_EXTRA_FLAGS_ARCH LINUX'], undefined);
+  assert.equal(env.CHROME_USER_FLAGS, undefined);
+  assert.equal(env.CHROMIUM_USER_FLAGS, undefined);
+  assert.equal(env.CHROMIUM_FLAGS, undefined);
+  assert.equal(env.CHROME_VERSION_EXTRA, 'Arch Linux');
+  assert.equal(env.KEEP_ME, 'yes');
+});
+
+test('new launches reject legacy launch policy while read-only reuse remains available', async () => {
+  const paths = mod.resolvePaths({ HOME: tempHome() });
+  const legacyState = {
+    pid: process.pid,
+    port: 9222,
+    remoteDebuggingAddress: '127.0.0.1',
+    userDataDir: paths.profileDir,
+    launchMode: 'headless',
+    profileVersion: mod.PROFILE_VERSION,
+    castAudio: false,
+    processStartTime: mod.readProcessIdentity(process.pid).startTime,
+    processGroupId: process.pid,
+  };
+  const options = {
+    env: { ...process.env, HOME: paths.home },
+    fetchImpl: async () => jsonResponse([cdpPageTarget(9222)]),
+  };
+  mod.writeState(paths, legacyState);
+
+  assert.equal(mod.stateMatchesLaunchConfig(legacyState, paths, options.env), false);
+  assert.deepEqual(
+    await mod.getReusableBrowser(paths, { ...options, requireLaunchConfig: false }),
+    legacyState,
+  );
+  assert.deepEqual(mod.readState(paths), legacyState);
+  assert.equal(await mod.getReusableBrowser(paths, options), null);
+  assert.equal(mod.readState(paths), null);
 });
 
 test('chromium audio loopback is opt-in', () => {
@@ -480,6 +555,7 @@ test('status cleanup clears unverified stale same-profile browser state without 
       userDataDir: paths.profileDir,
       launchMode: 'headless',
       profileVersion: 4,
+      launchConfigVersion: mod.CHROMIUM_LAUNCH_CONFIG_VERSION,
       castAudio: false,
       processStartTime: 'definitely-not-the-live-process-start-time',
       processGroupId: child.pid,
@@ -565,6 +641,101 @@ test('orphan cleanup does not signal another executable spoofing the profile arg
     assert.equal(status.browser, false);
     assert.equal(await waitForChildExit(child, 300), false);
     assert.equal(mod.isPidAlive(child.pid), true);
+  } finally {
+    if (mod.isPidAlive(child.pid)) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        process.kill(child.pid, 'SIGKILL');
+      }
+    }
+  }
+});
+
+test('orphan cleanup does not trust an unrecorded flattened browser command line', async () => {
+  const paths = mod.resolvePaths({ HOME: tempHome() });
+  const title = `${process.execPath} --user-data-dir=${paths.profileDir} --remote-debugging-address=127.0.0.1`;
+  const child = childProcess.spawn(process.execPath, [
+    '-e',
+    `process.title = ${JSON.stringify(title)}; setInterval(() => {}, 1000)`,
+  ], {
+    detached: true,
+    stdio: 'ignore',
+  });
+
+  try {
+    const deadline = Date.now() + 1000;
+    let args = [];
+    while (Date.now() < deadline) {
+      args = mod.cmdlineArgs(mod.readProcessIdentity(child.pid));
+      if (args.length === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(args.length, 1);
+
+    const status = await mod.getStatus(paths, {
+      env: { ...process.env, CHROMIUM_CASTCTL_CHROMIUM: process.execPath },
+      timeoutMs: 1,
+      waitMs: 1,
+    });
+
+    assert.equal(status.browser, false);
+    assert.equal(await waitForChildExit(child, 300), false);
+    assert.equal(mod.isPidAlive(child.pid), true);
+  } finally {
+    if (mod.isPidAlive(child.pid)) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        process.kill(child.pid, 'SIGKILL');
+      }
+    }
+  }
+});
+
+test('recorded launch token bridges a flattened wrapper executable transition', async () => {
+  const paths = mod.resolvePaths({ HOME: tempHome() });
+  const launchToken = 'recorded-token-123';
+  const title = `${process.execPath} --user-data-dir=${paths.profileDir} --chromium-castctl-launch-token=${launchToken} about:blank`;
+  const child = childProcess.spawn(process.execPath, [
+    '-e',
+    `process.title = ${JSON.stringify(title)}; setInterval(() => {}, 1000)`,
+  ], {
+    detached: true,
+    stdio: 'ignore',
+  });
+
+  try {
+    const deadline = Date.now() + 1000;
+    let identity;
+    while (Date.now() < deadline) {
+      identity = mod.readProcessIdentity(child.pid);
+      if (mod.cmdlineArgs(identity).length === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(mod.cmdlineArgs(identity).length, 1);
+
+    const staleExecutable = fs.statSync('/bin/sleep', { bigint: true });
+    mod.writeBrowserIdentity(paths, {
+      configuredExecutable: fs.realpathSync(process.execPath),
+      browserExecutable: fs.realpathSync('/bin/sleep'),
+      browserDevice: String(staleExecutable.dev),
+      browserInode: String(staleExecutable.ino),
+      pid: child.pid,
+      processStartTime: identity.startTime,
+      launchToken,
+      argumentsVerified: true,
+    });
+
+    const status = await mod.getStatus(paths, {
+      env: { ...process.env, CHROMIUM_CASTCTL_CHROMIUM: process.execPath },
+      timeoutMs: 1,
+      waitMs: 1,
+    });
+
+    assert.equal(status.browser, false);
+    assert.equal(await waitForChildExit(child), true);
+    assert.equal(mod.isPidAlive(child.pid), false);
   } finally {
     if (mod.isPidAlive(child.pid)) {
       try {
@@ -732,6 +903,7 @@ test('CDP client increments JSON-RPC IDs and collects Cast sinks', async () => {
   assert.equal(ws.sent[0].method, 'Cast.enable');
   assert.equal(ws.sent[1].id, 2);
   assert.equal(ws.sent[1].method, 'Cast.startDesktopMirroring');
+  assert.deepEqual(ws.sent[1].params, { sinkName: 'Wohnzimmer' });
   client.close();
 });
 
@@ -787,6 +959,7 @@ test('CLI formats async command errors without a stack trace', async () => {
     userDataDir: paths.profileDir,
     launchMode: 'headless',
     profileVersion: 4,
+    launchConfigVersion: mod.CHROMIUM_LAUNCH_CONFIG_VERSION,
     castAudio: false,
     processStartTime: mod.readProcessIdentity(process.pid).startTime,
     processGroupId: process.pid,
@@ -917,6 +1090,7 @@ test('sinks --json returns structured safe records and rejects record-boundary c
     userDataDir: paths.profileDir,
     launchMode: 'headless',
     profileVersion: 4,
+    launchConfigVersion: mod.CHROMIUM_LAUNCH_CONFIG_VERSION,
     castAudio: false,
     processStartTime: mod.readProcessIdentity(process.pid).startTime,
     processGroupId: process.pid,
@@ -958,6 +1132,7 @@ test('stop tries every active sink and clears local controller state after stop 
     userDataDir: paths.profileDir,
     launchMode: 'headless',
     profileVersion: 4,
+    launchConfigVersion: mod.CHROMIUM_LAUNCH_CONFIG_VERSION,
     castAudio: false,
     processStartTime: mod.readProcessIdentity(process.pid).startTime,
     processGroupId: process.pid,
@@ -995,6 +1170,7 @@ test('stop clears local controller state when CDP target setup fails', async () 
     userDataDir: paths.profileDir,
     launchMode: 'headless',
     profileVersion: 4,
+    launchConfigVersion: mod.CHROMIUM_LAUNCH_CONFIG_VERSION,
     castAudio: false,
     processStartTime: mod.readProcessIdentity(process.pid).startTime,
     processGroupId: process.pid,
@@ -1093,6 +1269,7 @@ test('status does not inspect or clean state owned by another locked command', a
     userDataDir: paths.profileDir,
     launchMode: 'headless',
     profileVersion: 4,
+    launchConfigVersion: mod.CHROMIUM_LAUNCH_CONFIG_VERSION,
     castAudio: false,
     processStartTime: mod.readProcessIdentity(process.pid).startTime,
     processGroupId: process.pid,
@@ -1133,6 +1310,7 @@ test('sinks --json marks duplicate friendly names as ambiguous and not startable
     userDataDir: paths.profileDir,
     launchMode: 'headless',
     profileVersion: 4,
+    launchConfigVersion: mod.CHROMIUM_LAUNCH_CONFIG_VERSION,
     castAudio: false,
     processStartTime: mod.readProcessIdentity(process.pid).startTime,
     processGroupId: process.pid,

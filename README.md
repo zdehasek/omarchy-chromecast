@@ -150,6 +150,7 @@ Lifecycle notes:
 
 - `status` and `status --waybar` never launch Chromium.
 - `sinks` launches Chromium with a fresh isolated profile for discovery, then closes it again if no cast is active.
+- The controller uses an isolated launcher configuration, removes standard Chromium user-flag environment variables, and creates a 1920x1080 virtual display. This isolates normal per-user browser flags and extensions and avoids Chromium's default 800x450 Cast capture limit; system policy and custom browser wrappers can still apply their own settings.
 - `pick` uses live Avahi/mDNS discovery first so Walker can open quickly. When Avahi finds targets, it waits until a unique target is selected before starting the headless Chromium control browser. If Avahi finds no targets, it falls back to Chromium discovery.
 - `waybar-toggle` marks the module busy, signals Waybar, then runs toggle work in the background so the bar can repaint immediately.
 - `stop` attempts to stop every active cast and proceeds with closing the isolated Chromium control browser even when a Cast stop request fails.
@@ -168,6 +169,8 @@ screencopy {
 ```
 
 then portal restore tokens may reduce future prompts, depending on Chromium and portal behavior.
+
+Chromium preserves the selected source's aspect ratio and negotiates the final stream quality with the receiver. A 3:2 or ultrawide monitor will therefore be letterboxed on a 16:9 television; filling the television requires selecting a 16:9 source or cropping at the display/receiver.
 
 ## Legacy/pre-Quattro Waybar integration
 

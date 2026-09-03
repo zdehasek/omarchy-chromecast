@@ -49,7 +49,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   Need[command needs Chromium?] --> Reuse[getReusableBrowser]
-  Reuse --> VerifyState{state matches profile version, audio mode, private profile?}
+  Reuse --> VerifyState{required launch policy, profile version, audio mode, and private profile match?}
   VerifyState -- no --> Discard[discard state browser + cleanup profile processes]
   VerifyState -- yes --> VerifyProc{pid/start time/profile/process group verified?}
   VerifyProc -- no --> Discard
@@ -66,7 +66,7 @@ flowchart TD
   Minimize --> Running[write state.json]
 ```
 
-`chromium.js` launches a headless controller with `--user-data-dir=<private profile>`, `--remote-debugging-address=127.0.0.1`, and `--remote-debugging-port=0`. `chromium-processes.js` records both the configured executable and observed browser executable/device/inode during startup so later cleanup can distinguish the helper's controller from unrelated processes spoofing a profile argument.
+`chromium.js` launches a headless controller with `--user-data-dir=<private profile>`, `--remote-debugging-address=127.0.0.1`, `--remote-debugging-port=0`, and a 1920x1080 virtual screen/window so Chromium does not clamp Cast capture to its 800x450 headless default. The browser receives a private `XDG_CONFIG_HOME`, and standard Chromium user-flag environment variables are removed before launch, isolating normal per-user flags and extensions without claiming to override system policy or arbitrary custom wrappers. A separate launch-configuration version prevents new casts from reusing an older launch policy; status and stop operations may still attach to that verified older controller so an upgrade-time status poll does not terminate an active cast. `chromium-processes.js` records both the configured executable and observed browser executable/device/inode during startup so later cleanup can distinguish the helper's controller from unrelated processes spoofing a profile argument. Flattened `/proc/<pid>/cmdline` cleanup additionally requires the private launch record because its original argv boundaries cannot be reconstructed safely.
 
 ## CDP connection and Cast operations
 
