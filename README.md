@@ -37,6 +37,7 @@ This project was vibe-coded from the practical need to have a simple "cast this 
 - Rejects ambiguous duplicate receiver names instead of silently choosing the first matching device.
 - Treats receiver names as untrusted display data: structured JSON is used for the Quickshell target list, control characters are rejected or neutralized, and UI surfaces render names as plain text.
 - Does **not** bypass Wayland/Hyprland portal confirmation.
+- Saves and restores the focused Hyprland display configuration when temporarily selecting a 16:9 mode for casting.
 - Does **not** edit Waybar config automatically.
 - Omarchy plugin mode does **not** require Walker; target selection happens in the Quickshell popup.
 
@@ -93,6 +94,12 @@ The plugin uses the bundled helper at `bin/chromium-castctl` by default. Overrid
 
 ```json
 { "id": "hackxit.chromecast", "castctl": "/path/to/chromium-castctl" }
+```
+
+By default, starting a cast temporarily switches the focused Hyprland display to its closest supported 16:9 mode, preferring 1920x1080, so a selected laptop display fills a typical television without stretching or cropping. Disable this behavior for the plugin with:
+
+```json
+{ "id": "hackxit.chromecast", "fitDisplay": false }
 ```
 
 Remove the plugin with:
@@ -154,6 +161,7 @@ Lifecycle notes:
 - `pick` uses live Avahi/mDNS discovery first so Walker can open quickly. When Avahi finds targets, it waits until a unique target is selected before starting the headless Chromium control browser. If Avahi finds no targets, it falls back to Chromium discovery.
 - `waybar-toggle` marks the module busy, signals Waybar, then runs toggle work in the background so the bar can repaint immediately.
 - `stop` attempts to stop every active cast and proceeds with closing the isolated Chromium control browser even when a Cast stop request fails.
+- Immediately before starting desktop mirroring, the helper saves the focused Hyprland display's mode, position, scale, and transform in private state and temporarily selects its closest supported 16:9 mode, preferring 1920x1080. Stop, quit, start failure, and stale-controller cleanup restore the saved configuration. Displays without a suitable mode and non-Hyprland sessions continue without adjustment.
 
 ## First-run portal prompt
 
@@ -170,7 +178,13 @@ screencopy {
 
 then portal restore tokens may reduce future prompts, depending on Chromium and portal behavior.
 
-Chromium preserves the selected source's aspect ratio and negotiates the final stream quality with the receiver. A 3:2 or ultrawide monitor will therefore be letterboxed on a 16:9 television; filling the television requires selecting a 16:9 source or cropping at the display/receiver.
+Chromium preserves the selected source's aspect ratio and negotiates the final stream quality with the receiver. The automatic display fit avoids letterboxing when the focused display has a compatible 16:9 mode and that same display is selected in the portal. In multi-monitor sessions, selecting a different portal source may still produce letterboxing.
+
+Direct CLI users can disable automatic display fitting per invocation with `start <sink-name> --no-fit-display` or through the environment:
+
+```bash
+CHROMIUM_CASTCTL_FIT_DISPLAY=0 chromium-castctl start Wohnzimmer
+```
 
 ## Legacy/pre-Quattro Waybar integration
 
@@ -215,6 +229,7 @@ Active:
 ```text
 profile: ~/.local/share/chromium-castctl/chromium-profile/
 state:   ~/.local/state/chromium-castctl/state.json
+display: ~/.local/state/chromium-castctl/display-state.json
 log:     ~/.cache/chromium-castctl/chromium.log
 binary:  ~/.local/bin/chromium-castctl
 font:    ~/.local/share/fonts/chromium-castctl/chromium-castctl-icons.otf
@@ -242,7 +257,7 @@ If the isolated headless browser is running but you are not casting, close it wi
 chromium-castctl quit-browser
 ```
 
-If state becomes stale, the next controller command removes stale state and cleans up any verified Chromium process using the isolated profile. `doctor` reports stale, extra, or orphaned control-browser processes without launching Chromium. To reset manually:
+If state becomes stale, the next controller command removes stale state, cleans up any verified Chromium process using the isolated profile, and restores any saved display configuration. `doctor` reports stale, extra, or orphaned control-browser processes without launching Chromium. To reset manually:
 
 ```bash
 rm -f ~/.local/state/chromium-castctl/state.json

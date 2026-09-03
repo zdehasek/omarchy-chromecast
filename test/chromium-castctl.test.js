@@ -387,6 +387,162 @@ test('state read/write round-trips JSON state with private file permissions', ()
   assert.equal(fs.statSync(path.dirname(paths.stateFile)).mode & 0o777, 0o700);
 });
 
+function focusedThreeTwoMonitor(overrides = {}) {
+  return {
+    name: 'eDP-1',
+    width: 2256,
+    height: 1504,
+    refreshRate: 59.999,
+    x: 0,
+    y: 0,
+    scale: 1.5666667,
+    transform: 0,
+    focused: true,
+    disabled: false,
+    availableModes: [
+      '2256x1504@60.00Hz',
+      '2560x1440@60.00Hz',
+      '1920x1080@60.00Hz',
+      '1280x720@60.00Hz',
+    ],
+    ...overrides,
+  };
+}
+
+function savedDisplayState() {
+  return {
+    version: mod.DISPLAY_STATE_VERSION,
+    output: 'eDP-1',
+    mode: '2256x1504@60.00',
+    position: '0x0',
+    scale: 1.5666667,
+    transform: 0,
+    temporaryMode: '1920x1080@60.00',
+    createdAt: new Date().toISOString(),
+  };
+}
+
+test('16:9 mode selection prefers 1080p and accepts common near-16:9 modes', () => {
+  assert.deepEqual(mod.selectSixteenNineMode([
+    '3840x2160@60.00Hz',
+    '1366x768@60.00Hz',
+    '1920x1080@59.94Hz',
+    'not-a-mode',
+  ]), {
+    width: 1920,
+    height: 1080,
+    refreshRate: 59.94,
+    value: '1920x1080@59.94',
+  });
+  assert.equal(mod.isSixteenNine(mod.parseMode('1366x768@60.00Hz')), true);
+  assert.equal(mod.isSixteenNine(mod.parseMode('1920x1200@60.00Hz')), false);
+});
+
+test('display fit saves the focused monitor and restores its exact configuration', () => {
+  const paths = mod.resolvePaths({ HOME: tempHome() });
+  const calls = [];
+  const hyprctl = (args) => {
+    calls.push(args);
+    if (args[0] === 'monitors') return { status: 0, stdout: JSON.stringify([focusedThreeTwoMonitor()]) };
+    return { status: 0, stdout: '' };
+  };
+
+  assert.equal(mod.prepareDisplayForCast(paths, { hyprctl }), true);
+  const state = mod.readDisplayState(paths);
+  assert.deepEqual(state, {
+    version: mod.DISPLAY_STATE_VERSION,
+    output: 'eDP-1',
+    mode: '2256x1504@60.00',
+    position: '0x0',
+    scale: 1.5666667,
+    transform: 0,
+    temporaryMode: '1920x1080@60.00',
+    createdAt: state.createdAt,
+  });
+  assert.match(calls[1][1], /mode = "1920x1080@60\.00"/);
+  assert.match(calls[1][1], /scale = 1\.5666667/);
+
+  assert.equal(mod.restoreDisplay(paths, { hyprctl }), true);
+  assert.match(calls[2][1], /mode = "2256x1504@60\.00"/);
+  assert.equal(mod.readDisplayState(paths), null);
+});
+
+test('display fit is optional and leaves unsupported monitors unchanged', () => {
+  const paths = mod.resolvePaths({ HOME: tempHome() });
+  let calls = 0;
+  const hyprctl = () => {
+    calls += 1;
+    return { status: 0, stdout: JSON.stringify([focusedThreeTwoMonitor({ availableModes: ['2256x1504@60.00Hz'] })]) };
+  };
+
+  assert.equal(mod.prepareDisplayForCast(paths, { hyprctl, fitDisplay: false }), false);
+  assert.equal(calls, 0);
+  assert.equal(mod.prepareDisplayForCast(paths, { hyprctl }), false);
+  assert.equal(calls, 1);
+  assert.equal(mod.readDisplayState(paths), null);
+  assert.equal(mod.fitDisplayEnabled({ CHROMIUM_CASTCTL_FIT_DISPLAY: 'off' }), false);
+});
+
+test('a failed Cast start restores a temporarily fitted display', async () => {
+  const paths = mod.resolvePaths({ HOME: tempHome() });
+  const calls = [];
+  const hyprctl = (args) => {
+    calls.push(args);
+    if (args[0] === 'monitors') return { status: 0, stdout: JSON.stringify([focusedThreeTwoMonitor()]) };
+    return { status: 0, stdout: '' };
+  };
+  const client = { send: async () => { throw new Error('receiver refused start'); } };
+
+  await assert.rejects(
+    () => mod.startMirroring(paths, { hyprctl }, client, { name: 'Living Room' }),
+    /receiver refused start/,
+  );
+  assert.equal(calls.filter((args) => args[0] === 'eval').length, 2);
+  assert.equal(mod.readDisplayState(paths), null);
+});
+
+test('stop and quit restore saved display state even without a running controller', async () => {
+  for (const command of ['stop', 'quit-browser']) {
+    const paths = mod.resolvePaths({ HOME: tempHome() });
+    const evals = [];
+    const hyprctl = (args) => {
+      if (args[0] === 'eval') evals.push(args[1]);
+      return { status: 0, stdout: '' };
+    };
+    mod.writeDisplayState(paths, savedDisplayState());
+
+    const code = await mod.run(
+      [command],
+      { stdout: { write: () => {} }, stderr: { write: () => {} } },
+      { HOME: paths.home, PATH: '' },
+      { paths, hyprctl },
+    );
+
+    assert.equal(code, 0, command);
+    assert.equal(evals.length, 1, command);
+    assert.match(evals[0], /mode = "2256x1504@60\.00"/);
+    assert.equal(mod.readDisplayState(paths), null, command);
+  }
+});
+
+test('idle status restores display state left by an interrupted controller', async () => {
+  const paths = mod.resolvePaths({ HOME: tempHome() });
+  const evals = [];
+  mod.writeDisplayState(paths, savedDisplayState());
+
+  const status = await mod.getStatus(paths, {
+    env: { HOME: paths.home, PATH: '' },
+    hyprctl: (args) => {
+      if (args[0] === 'eval') evals.push(args[1]);
+      return { status: 0, stdout: '' };
+    },
+  });
+
+  assert.equal(status.browser, false);
+  assert.equal(evals.length, 1);
+  assert.equal(mod.readDisplayState(paths), null);
+});
+
 test('executable lookup respects an explicitly empty PATH', () => {
   assert.equal(mod.findExecutable('node', { PATH: '' }), null);
 });
