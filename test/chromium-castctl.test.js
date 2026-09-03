@@ -696,6 +696,19 @@ test('status --waybar renders idle JSON without launching Chromium', async () =>
   });
 });
 
+test('status keeps a newly started sink active while Chromium publishes its session', () => {
+  const now = Date.parse('2026-09-03T20:00:20.000Z');
+  assert.equal(mod.recentlyStartedSink({
+    lastActiveSink: 'HyggeTV',
+    castStartedAt: '2026-09-03T20:00:00.000Z',
+  }, now), 'HyggeTV');
+  assert.equal(mod.recentlyStartedSink({
+    lastActiveSink: 'HyggeTV',
+    castStartedAt: '2026-09-03T19:59:00.000Z',
+  }, now), null);
+  assert.equal(mod.recentlyStartedSink({ lastActiveSink: 'HyggeTV' }, now), null);
+});
+
 test('status cleanup clears unverified stale same-profile browser state without signaling the PID', async () => {
   const paths = mod.resolvePaths({ HOME: tempHome() });
   const child = childProcess.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {

@@ -13,6 +13,7 @@ The release workflow expects a versioned section named `## [X.Y.Z]` for tag `vX.
 - Version the Chromium launch policy separately from the profile schema so new casts do not reuse obsolete controller settings while status and stop remain safe during upgrades.
 - Reflect successful start and stop actions immediately in the Quickshell panel so the stop control remains available while status polling catches up.
 - Temporarily fit the focused Hyprland display to its closest supported 16:9 mode for fullscreen television casting, then restore its exact prior configuration on stop, failure, quit, or stale cleanup.
+- Keep Stop casting available and preserve the active panel state while Chromium's Cast session is still appearing after startup.
 
 ## [0.1.3] - 2026-08-23
 

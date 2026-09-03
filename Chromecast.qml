@@ -116,7 +116,7 @@ BarWidget {
   function buildActions() {
     var rows = []
     rows.push({ kind: "pick", icon: "󰐊", label: statusActive ? "Change target" : "Start casting", subtitle: sinks.length > 0 ? "Choose from the targets below" : "Scan for available Chromecast targets", enabled: !commandBusy })
-    rows.push({ kind: "stop", icon: "", label: "Stop casting", subtitle: statusActive ? "Stop the active desktop mirror" : "No active cast to stop", enabled: !commandBusy && (statusActive || statusBusy || activeSink !== "") })
+    rows.push({ kind: "stop", icon: "", label: "Stop casting", subtitle: statusActive ? "Stop the active desktop mirror" : "Stop mirroring or close the control session", enabled: !commandBusy })
     rows.push({ kind: "refresh", icon: "󰑐", label: "Refresh targets", subtitle: sinksProc.running ? "Scanning…" : "Update status and available sinks", enabled: !sinksProc.running })
     rows.push({ kind: "doctor", icon: "󰒡", label: "Run doctor", subtitle: "Open diagnostics in a floating terminal", enabled: true })
     rows.push({ kind: "quit", icon: "󰗼", label: "Quit control browser", subtitle: "Close the isolated Chromium controller", enabled: !commandBusy })
